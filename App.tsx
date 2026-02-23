@@ -374,6 +374,7 @@ const App = (): React.JSX.Element => {
   const expressionCursorVisibleRef = useRef(false);
   const pendingTapSelectionRef = useRef<CursorSelection | null>(null);
   const ignoreSelectionChangeRef = useRef(false);
+  const suppressSelectionChangeRef = useRef(false);
   const inputSelectionRef = useRef<CursorSelection>({start: 0, end: 0});
 
   const historyPressStartXRef = useRef<Record<string, number>>({});
@@ -594,7 +595,11 @@ const App = (): React.JSX.Element => {
     (
       event: NativeSyntheticEvent<TextInputSelectionChangeEventData>,
     ): void => {
-      if (expressionDraggingRef.current || ignoreSelectionChangeRef.current) {
+      if (
+        expressionDraggingRef.current ||
+        ignoreSelectionChangeRef.current ||
+        suppressSelectionChangeRef.current
+      ) {
         return;
       }
 
@@ -623,6 +628,7 @@ const App = (): React.JSX.Element => {
     (event: GestureResponderEvent): void => {
       expressionDragStartXRef.current = event.nativeEvent.pageX;
       expressionDraggingRef.current = false;
+      suppressSelectionChangeRef.current = false;
       pendingTapSelectionRef.current = null;
     },
     [],
@@ -654,13 +660,23 @@ const App = (): React.JSX.Element => {
     [setExpressionCursorVisibility],
   );
 
-  const onExpressionTouchEnd = useCallback((): void => {
-    const didDrag = expressionDraggingRef.current;
+  const onExpressionTouchEnd = useCallback((event: GestureResponderEvent): void => {
+    const startX = expressionDragStartXRef.current;
+    const didDrag =
+      expressionDraggingRef.current ||
+      (startX !== null &&
+        Math.abs(event.nativeEvent.pageX - startX) >=
+          EXPRESSION_DRAG_THRESHOLD_PX);
+
     expressionDragStartXRef.current = null;
     expressionDraggingRef.current = false;
 
     if (didDrag) {
       pendingTapSelectionRef.current = null;
+      suppressSelectionChangeRef.current = true;
+      requestAnimationFrame(() => {
+        suppressSelectionChangeRef.current = false;
+      });
       expressionInputRef.current?.blur();
       return;
     }
@@ -1069,16 +1085,22 @@ const App = (): React.JSX.Element => {
             onTouchEnd={onExpressionTouchEnd}
             onTouchCancel={onExpressionTouchEnd}
             onChangeText={nextValue => {
-              expressionRef.current = nextValue;
-              setExpression(nextValue);
-              setCommittedResult(null);
-              setEqualsCommitted(false);
+              if (nextValue === expressionRef.current) {
+                return;
+              }
+
+              expressionInputRef.current?.setNativeProps({
+                text: expressionRef.current,
+                selection: inputSelectionRef.current,
+              });
             }}
             autoCorrect={false}
             autoCapitalize="none"
             multiline={false}
             scrollEnabled
             showSoftInputOnFocus={false}
+            inputMode="none"
+            contextMenuHidden
             caretHidden={!isExpressionCursorVisible}
             selection={isExpressionCursorVisible ? inputSelection : undefined}
             selectionColor="#d7d9de"
