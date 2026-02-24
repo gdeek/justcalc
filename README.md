@@ -65,7 +65,7 @@ open ./ios/CALC.xcworkspace
 
 In Xcode, select your team/signing profile, choose your connected device, then press Run to build and install.
 
-## Install on Pixel
+## Install on Android device
 
 ```sh
 adb devices
