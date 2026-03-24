@@ -81,7 +81,6 @@ const CONTINUE_FROM_RESULT_TOKENS = new Set([
   'BACKSPACE',
 ]);
 
-const EXPRESSION_DRAG_THRESHOLD_PX = 4;
 const RESULT_MAX_DECIMALS = 4;
 const CLOSE_PAREN_BLOCKED_CHARS = new Set(['+', '-', '×', '÷', '%', '^', '(']);
 
@@ -364,18 +363,19 @@ const App = (): React.JSX.Element => {
     name: string;
   } | null>(null);
 
+  const [expressionContentWidth, setExpressionContentWidth] = useState(0);
+
   const pagerRef = useRef<ScrollView | null>(null);
   const topDisplayRef = useRef<ScrollView | null>(null);
   const bannerTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const expressionInputRef = useRef<TextInput | null>(null);
+  const expressionScrollRef = useRef<ScrollView | null>(null);
   const expressionRef = useRef('');
-  const expressionDragStartXRef = useRef<number | null>(null);
-  const expressionDraggingRef = useRef(false);
   const expressionCursorVisibleRef = useRef(false);
-  const pendingTapSelectionRef = useRef<CursorSelection | null>(null);
+  const isExpressionScrollingRef = useRef(false);
   const ignoreSelectionChangeRef = useRef(false);
-  const suppressSelectionChangeRef = useRef(false);
   const inputSelectionRef = useRef<CursorSelection>({start: 0, end: 0});
+  const expressionContainerWidthRef = useRef(0);
 
   const historyPressStartXRef = useRef<Record<string, number>>({});
   const folderPressStartXRef = useRef<Record<string, number>>({});
@@ -470,6 +470,14 @@ const App = (): React.JSX.Element => {
       topDisplayRef.current?.scrollToEnd({animated: false});
     });
   }, [topDisplayValue]);
+
+  useEffect(() => {
+    if (inputSelectionRef.current.end >= expression.length) {
+      requestAnimationFrame(() => {
+        expressionScrollRef.current?.scrollToEnd({animated: false});
+      });
+    }
+  }, [expression]);
 
   const historyTreeItems = useMemo(() => {
     const items: HistoryTreeItem[] = [];
@@ -596,21 +604,21 @@ const App = (): React.JSX.Element => {
       event: NativeSyntheticEvent<TextInputSelectionChangeEventData>,
     ): void => {
       if (
-        expressionDraggingRef.current ||
-        ignoreSelectionChangeRef.current ||
-        suppressSelectionChangeRef.current
+        isExpressionScrollingRef.current ||
+        ignoreSelectionChangeRef.current
       ) {
         return;
       }
 
-      const nextSelection = clampSelection(
-        event.nativeEvent.selection as CursorSelection,
-        expression,
-      );
+      const raw = event.nativeEvent.selection as CursorSelection;
+      const collapsed =
+        raw.start !== raw.end ? {start: raw.end, end: raw.end} : raw;
+      const nextSelection = clampSelection(collapsed, expression);
 
       if (!expressionCursorVisibleRef.current) {
-        pendingTapSelectionRef.current = nextSelection;
-        return;
+        // tap on expression while cursor was hidden: show cursor at tap position
+        expressionCursorVisibleRef.current = true;
+        setIsExpressionCursorVisible(true);
       }
 
       setSelectionIfChanged(nextSelection);
@@ -619,84 +627,38 @@ const App = (): React.JSX.Element => {
   );
 
   const onExpressionFocus = useCallback((): void => {
-    if (!expressionCursorVisibleRef.current) {
-      expressionInputRef.current?.blur();
-    }
-  }, []);
-
-  const onExpressionTouchStart = useCallback(
-    (event: GestureResponderEvent): void => {
-      expressionDragStartXRef.current = event.nativeEvent.pageX;
-      expressionDraggingRef.current = false;
-      suppressSelectionChangeRef.current = false;
-      pendingTapSelectionRef.current = null;
-    },
-    [],
-  );
-
-  const onExpressionTouchMove = useCallback(
-    (event: GestureResponderEvent): void => {
-      const startX = expressionDragStartXRef.current;
-      if (startX === null) {
-        return;
-      }
-
-      const deltaX = event.nativeEvent.pageX - startX;
-      if (
-        !expressionDraggingRef.current &&
-        Math.abs(deltaX) < EXPRESSION_DRAG_THRESHOLD_PX
-      ) {
-        return;
-      }
-
-      if (!expressionDraggingRef.current) {
-        expressionDraggingRef.current = true;
-        pendingTapSelectionRef.current = null;
-        if (expressionCursorVisibleRef.current) {
-          setExpressionCursorVisibility(false);
-        }
-      }
-    },
-    [setExpressionCursorVisibility],
-  );
-
-  const onExpressionTouchEnd = useCallback((event: GestureResponderEvent): void => {
-    const startX = expressionDragStartXRef.current;
-    const didDrag =
-      expressionDraggingRef.current ||
-      (startX !== null &&
-        Math.abs(event.nativeEvent.pageX - startX) >=
-          EXPRESSION_DRAG_THRESHOLD_PX);
-
-    expressionDragStartXRef.current = null;
-    expressionDraggingRef.current = false;
-
-    if (didDrag) {
-      pendingTapSelectionRef.current = null;
-      suppressSelectionChangeRef.current = true;
-      requestAnimationFrame(() => {
-        suppressSelectionChangeRef.current = false;
-      });
+    if (isExpressionScrollingRef.current) {
       expressionInputRef.current?.blur();
       return;
     }
-
-    const pendingSelection = pendingTapSelectionRef.current;
-    pendingTapSelectionRef.current = null;
-
-    if (pendingSelection) {
-      setSelectionIfChanged(pendingSelection);
-    }
-
     if (!expressionCursorVisibleRef.current) {
-      setExpressionCursorVisibility(true);
-      expressionInputRef.current?.focus();
+      expressionCursorVisibleRef.current = true;
+      setIsExpressionCursorVisible(true);
     }
+  }, []);
 
-    if (pendingSelection) {
-      syncNativeSelection(pendingSelection);
+  const onExpressionScrollBeginDrag = useCallback((): void => {
+    if (expressionCursorVisibleRef.current) {
+      expressionCursorVisibleRef.current = false;
+      expressionInputRef.current?.setNativeProps({caretHidden: true});
     }
-  }, [setExpressionCursorVisibility, setSelectionIfChanged, syncNativeSelection]);
+    isExpressionScrollingRef.current = true;
+    expressionInputRef.current?.blur();
+  }, []);
+
+  const onExpressionScrollEnd = useCallback((): void => {
+    isExpressionScrollingRef.current = false;
+    if (!expressionCursorVisibleRef.current) {
+      setIsExpressionCursorVisible(false);
+    }
+  }, []);
+
+  const onExpressionContentSizeChange = useCallback(
+    (e: {nativeEvent: {contentSize: {width: number; height: number}}}): void => {
+      setExpressionContentWidth(e.nativeEvent.contentSize.width);
+    },
+    [],
+  );
 
   const applyExpressionUpdate = useCallback(
     (nextExpression: string, nextSelection: CursorSelection) => {
@@ -1071,41 +1033,63 @@ const App = (): React.JSX.Element => {
           <Text style={styles.topDisplayText}>{topDisplayValue || ' '}</Text>
         </ScrollView>
 
-        <View style={styles.inputWrap}>
-          <TextInput
-            ref={expressionInputRef}
-            value={expression}
-            placeholder="0"
-            placeholderTextColor="#8d9098"
-            style={styles.expressionInput}
-            onFocus={onExpressionFocus}
-            onSelectionChange={onExpressionSelectionChange}
-            onTouchStart={onExpressionTouchStart}
-            onTouchMove={onExpressionTouchMove}
-            onTouchEnd={onExpressionTouchEnd}
-            onTouchCancel={onExpressionTouchEnd}
-            onChangeText={nextValue => {
-              if (nextValue === expressionRef.current) {
-                return;
-              }
+        <View
+          style={styles.inputWrap}
+          onLayout={e => {
+            expressionContainerWidthRef.current = e.nativeEvent.layout.width;
+          }}>
+          <ScrollView
+            ref={expressionScrollRef}
+            horizontal
+            bounces={false}
+            overScrollMode="never"
+            showsHorizontalScrollIndicator={false}
+            keyboardShouldPersistTaps="always"
+            onScrollBeginDrag={onExpressionScrollBeginDrag}
+            onMomentumScrollEnd={onExpressionScrollEnd}
+            onScrollEndDrag={onExpressionScrollEnd}
+            contentContainerStyle={styles.expressionScrollContent}>
+            <TextInput
+              ref={expressionInputRef}
+              value={expression}
+              placeholder="0"
+              placeholderTextColor="#8d9098"
+              style={[
+                styles.expressionInput,
+                {
+                  width: Math.max(
+                    expressionContentWidth + 4,
+                    expressionContainerWidthRef.current || 300,
+                  ),
+                },
+              ]}
+              onFocus={onExpressionFocus}
+              onSelectionChange={onExpressionSelectionChange}
+              onContentSizeChange={onExpressionContentSizeChange}
+              onChangeText={nextValue => {
+                if (nextValue === expressionRef.current) {
+                  return;
+                }
 
-              expressionInputRef.current?.setNativeProps({
-                text: expressionRef.current,
-                selection: inputSelectionRef.current,
-              });
-            }}
-            autoCorrect={false}
-            autoCapitalize="none"
-            multiline={false}
-            scrollEnabled
-            showSoftInputOnFocus={false}
-            inputMode="none"
-            contextMenuHidden
-            caretHidden={!isExpressionCursorVisible}
-            selection={isExpressionCursorVisible ? inputSelection : undefined}
-            selectionColor="#d7d9de"
-            textAlign="right"
-          />
+                expressionInputRef.current?.setNativeProps({
+                  text: expressionRef.current,
+                  selection: inputSelectionRef.current,
+                });
+              }}
+              autoCorrect={false}
+              autoCapitalize="none"
+              multiline={false}
+              scrollEnabled={false}
+              showSoftInputOnFocus={false}
+              inputMode="none"
+              contextMenuHidden
+              selectTextOnFocus={false}
+              caretHidden={!isExpressionCursorVisible}
+              selection={isExpressionCursorVisible ? inputSelection : undefined}
+              selectionColor="#d7d9de"
+              textAlign="right"
+            />
+          </ScrollView>
         </View>
       </View>
 
@@ -1487,6 +1471,10 @@ const styles = StyleSheet.create({
   inputWrap: {
     minHeight: 50,
     justifyContent: 'center',
+  },
+  expressionScrollContent: {
+    minWidth: '100%',
+    justifyContent: 'flex-end' as const,
   },
   expressionInput: {
     color: '#d7d9de',
